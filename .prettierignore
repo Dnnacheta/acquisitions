@@ -1,0 +1,29 @@
+# Dependencies
+**/node_modules/
+
+# Generated builds and test coverage
+**/dist/
+**/build/
+**/coverage/
+**/.nyc_output/
+
+# Tool caches
+**/.cache/
+**/.eslintcache
+**/.prettiercache
+
+# Generated assets
+**/*.min.js
+**/*.min.css
+**/*.map
+
+# Package manager lockfiles
+**/package-lock.json
+**/npm-shrinkwrap.json
+**/yarn.lock
+**/pnpm-lock.yaml
+
+# Local environment files and logs
+**/.env
+**/.env.*
+**/*.log
