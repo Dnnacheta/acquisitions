@@ -1,6 +1,48 @@
 {
   "version": 1,
   "skills": {
+    "arcjet": {
+      "source": "arcjet/skills",
+      "sourceType": "github",
+      "skillPath": "arcjet/SKILL.md",
+      "computedHash": "19a1ae75e10fa161e236ec460589d2b35e8bf107452ad5c445eed810d4d4b6da"
+    },
+    "integrate-arcjet-guard-claude-agent-sdk-py": {
+      "source": "arcjet/skills",
+      "sourceType": "github",
+      "skillPath": "integrate-arcjet-guard-claude-agent-sdk-py/SKILL.md",
+      "computedHash": "1f953b4a8d3aeef8ce2cc0aee11c1ff6cfb88079382c30e3b9c81f19e1e8095f"
+    },
+    "integrate-arcjet-guard-claude-managed-agents-py": {
+      "source": "arcjet/skills",
+      "sourceType": "github",
+      "skillPath": "integrate-arcjet-guard-claude-managed-agents-py/SKILL.md",
+      "computedHash": "611b7bbb98a2c62f8dcd54e0c2d8d6dc7721b956dca0e131f479b3c212c88e57"
+    },
+    "integrate-arcjet-guard-crewai": {
+      "source": "arcjet/skills",
+      "sourceType": "github",
+      "skillPath": "integrate-arcjet-guard-crewai/SKILL.md",
+      "computedHash": "273aab4cc9a53d3cf5f6f2dab7031aca2652b601290e8bb8174bf6a769c0e7ca"
+    },
+    "integrate-arcjet-guard-langchain-py": {
+      "source": "arcjet/skills",
+      "sourceType": "github",
+      "skillPath": "integrate-arcjet-guard-langchain-py/SKILL.md",
+      "computedHash": "d209e2af19c6f9f87ecfcabb95bf9d503af63ba952f3c9f6f7b28451cc5c3d64"
+    },
+    "integrate-arcjet-guard-openai-agents-py": {
+      "source": "arcjet/skills",
+      "sourceType": "github",
+      "skillPath": "integrate-arcjet-guard-openai-agents-py/SKILL.md",
+      "computedHash": "b692e3ae83955e763985244a26ecb01f5b8e59aa88fbcd5dfcd3e3693dcdff8e"
+    },
+    "integrate-arcjet-guard-strands-agents-py": {
+      "source": "arcjet/skills",
+      "sourceType": "github",
+      "skillPath": "integrate-arcjet-guard-strands-agents-py/SKILL.md",
+      "computedHash": "7af242f86098b327224760a27cff2565a303a82a9422e073a3c4d6478e21b024"
+    },
     "neon": {
       "source": "neondatabase/agent-skills",
       "sourceType": "github",

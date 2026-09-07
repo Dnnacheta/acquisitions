@@ -5,6 +5,8 @@ import helmet from "helmet";
 import morgan from "morgan";
 import logger from "#config/logger.js";
 import authRouter from "#routes/auth.routes.js";
+import protection from "#config/arcjet.js";
+import { allowRequest } from "#utils/protection.js";
 
 const app = express();
 
@@ -24,7 +26,8 @@ app.use(express.urlencoded({ extended: true }));
 
 app.use("/api/auth", authRouter);
 
-app.get("/api", (req, res) => {
+app.get("/api", async (req, res) => {
+  if (!(await allowRequest(protection.publicProtection, req, res))) return;
   res.status(200).json({ message: "Acquisitions API is running" });
 });
 
@@ -37,7 +40,8 @@ app.get("/health", (req, res) => {
   });
 });
 
-app.get("/", (req, res) => {
+app.get("/", async (req, res) => {
+  if (!(await allowRequest(protection.publicProtection, req, res))) return;
   res.status(200).send("Hello From Acquisitions!");
 });
 

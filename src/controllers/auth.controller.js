@@ -1,11 +1,13 @@
 import { eq } from "drizzle-orm";
 import db from "#config/database.js";
 import logger from "#config/logger.js";
+import protection from "#config/arcjet.js";
 import { users } from "#model/user.model.js";
 import { clearCookie, setCookie } from "#utils/cookies.js";
 import { formatError, formatValidationError } from "#utils/format.js";
 import { signToken } from "#utils/jwt.js";
 import { hashPassword, verifyPassword } from "#utils/password.js";
+import { allowRequest } from "#utils/protection.js";
 import { signInSchema, signUpSchema } from "#validations/auth.validation.js";
 
 const publicFields = {
@@ -19,7 +21,8 @@ const publicFields = {
 // Perform password hashing even when an email is not registered.
 const dummyHash = `scrypt-v1$${"0".repeat(32)}$${"0".repeat(128)}`;
 
-export function signOut(req, res) {
+export async function signOut(req, res) {
+  if (!(await allowRequest(protection.publicProtection, req, res))) return;
   try {
     res.set("Cache-Control", "no-store");
     clearCookie(res, "token");
@@ -38,6 +41,7 @@ function sendSession(res, status, message, user) {
 }
 
 export async function signUp(req, res) {
+  if (!(await allowRequest(protection.signUpProtection, req, res))) return;
   const result = signUpSchema.safeParse(req.body);
   if (!result.success) {
     return res.status(400).json(formatValidationError(result.error));
@@ -64,6 +68,7 @@ export async function signUp(req, res) {
 }
 
 export async function signIn(req, res) {
+  if (!(await allowRequest(protection.signInProtection, req, res))) return;
   const result = signInSchema.safeParse(req.body);
   if (!result.success) {
     return res.status(400).json(formatValidationError(result.error));

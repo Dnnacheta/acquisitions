@@ -13,6 +13,7 @@ process.env.DATABASE_URL = "postgresql://test:test@127.0.0.1:1/test";
 process.env.JWT_SECRET = randomBytes(48).toString("hex");
 process.env.JWT_EXPIRES_IN = "1h";
 process.env.NODE_ENV = "production";
+process.env.ARCJET_KEY = "ajkey_test";
 
 const { default: db, pool } = await import("#config/database.js");
 const { default: logger } = await import("#config/logger.js");
@@ -20,6 +21,19 @@ const { users } = await import("#model/user.model.js");
 const { verifyToken } = await import("#utils/jwt.js");
 const { hashPassword, verifyPassword } = await import("#utils/password.js");
 const { default: app } = await import("../src/app.js");
+const { default: protectionClients } = await import("#config/arcjet.js");
+
+// Never send test requests or credentials to Arcjet.
+for (const name of Object.keys(protectionClients)) {
+  protectionClients[name] = {
+    protect: mock.fn(async () => ({
+      isDenied: () => false,
+      isErrored: () => false,
+    })),
+  };
+}
+const { publicProtection, signInProtection, signUpProtection } =
+  protectionClients;
 
 const client = new PGlite();
 const testDb = drizzle(client);
@@ -251,4 +265,39 @@ test("password hashes use independent salts", async () => {
   assert.notEqual(first, second);
   assert.ok(await verifyPassword(password, first));
   assert.equal(await verifyPassword("wrong password", first), false);
+});
+
+test("Arcjet blocks each protected route before its handler performs work", async () => {
+  for (const [method, route, protection] of [
+    ["post", "/api/auth/sign-up", signUpProtection],
+    ["post", "/api/auth/sign-in", signInProtection],
+    ["post", "/api/auth/sign-out", publicProtection],
+    ["get", "/api", publicProtection],
+    ["get", "/", publicProtection],
+  ]) {
+    const original = protection.protect;
+    const inserts = db.insert.mock.callCount();
+    const selects = db.select.mock.callCount();
+    const deny = mock.fn(async () => ({
+      isDenied: () => true,
+      reason: { isRateLimit: () => true },
+    }));
+    protection.protect = deny;
+    try {
+      const response = await request(app)[method](route).expect(429);
+      assert.equal(deny.mock.callCount(), 1);
+      assert.equal(response.headers["set-cookie"], undefined);
+      assert.equal(db.insert.mock.callCount(), inserts);
+      assert.equal(db.select.mock.callCount(), selects);
+    } finally {
+      protection.protect = original;
+    }
+  }
+});
+
+test("health checks do not call Arcjet", async () => {
+  const calls = publicProtection.protect.mock.callCount();
+  const response = await request(app).get("/health").expect(200);
+  assert.equal(response.body.status, "ok");
+  assert.equal(publicProtection.protect.mock.callCount(), calls);
 });
