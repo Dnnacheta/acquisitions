@@ -1,6 +1,7 @@
 import { config } from "dotenv";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
+import logger from "./logger.js";
 
 config({ path: [".env.local", ".env"], quiet: true });
 
@@ -14,7 +15,7 @@ export const pool = new Pool({
 });
 
 pool.on("error", () => {
-  console.error("Unexpected error on an idle PostgreSQL connection");
+  logger.error("Unexpected error on an idle PostgreSQL connection");
 });
 
 export const db = drizzle({ client: pool });

@@ -1,3 +1,4 @@
 node_modules
 .neon
 .env.local
+logs/
