@@ -6,7 +6,6 @@ import winston from "winston";
 config({ path: [".env.local", ".env"], quiet: true });
 
 const logsDirectory = new URL("../../logs/", import.meta.url);
-mkdirSync(logsDirectory, { recursive: true });
 
 const consoleTransport = new winston.transports.Console({
   stderrLevels: ["error"],
@@ -18,6 +17,19 @@ const consoleTransport = new winston.transports.Console({
   }),
 });
 
+const transports = [consoleTransport];
+if (process.env.LOG_TO_FILE !== "false") {
+  mkdirSync(logsDirectory, { recursive: true });
+  transports.push(
+    new winston.transports.File({
+      filename: fileURLToPath(new URL("app.log", logsDirectory)),
+      level: "info",
+      maxsize: 5 * 1024 * 1024,
+      maxFiles: 5,
+    }),
+  );
+}
+
 const logger = winston.createLogger({
   level: process.env.LOG_LEVEL || "info",
   defaultMeta: { service: "acquisitions" },
@@ -27,15 +39,7 @@ const logger = winston.createLogger({
     winston.format.splat(),
     winston.format.json(),
   ),
-  transports: [
-    consoleTransport,
-    new winston.transports.File({
-      filename: fileURLToPath(new URL("app.log", logsDirectory)),
-      level: "info",
-      maxsize: 5 * 1024 * 1024,
-      maxFiles: 5,
-    }),
-  ],
+  transports,
 });
 
 export default logger;

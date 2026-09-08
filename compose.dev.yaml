@@ -1,0 +1,66 @@
+name: acquisitions-dev
+
+services:
+  db:
+    image: ${NEON_LOCAL_IMAGE:-neondatabase/neon_local@sha256:15e20ade47a80ae8285d6dbb6877f7482b305eb1021dd5119d33055dce9407ce}
+    environment:
+      NEON_API_KEY: ${NEON_API_KEY:?Set NEON_API_KEY in .env.docker.dev}
+      NEON_PROJECT_ID: ${NEON_PROJECT_ID:?Set NEON_PROJECT_ID in .env.docker.dev}
+      BRANCH_ID: ${BRANCH_ID:?Set a dedicated development BRANCH_ID}
+      DELETE_BRANCH: "false"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 5432 -U neon"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+
+  app:
+    build:
+      context: .
+      target: development
+    init: true
+    environment:
+      NODE_ENV: development
+      PORT: "3000"
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      LOG_TO_FILE: "false"
+      DATABASE_URL: postgres://neon:npg@db:5432/${NEON_DATABASE_NAME:-neondb}?sslmode=no-verify
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env.docker.dev}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-1h}
+      ARCJET_KEY: ${ARCJET_KEY:?Set ARCJET_KEY in .env.docker.dev}
+      ARCJET_ENV: development
+    ports:
+      - "127.0.0.1:${APP_PORT:-3000}:3000"
+    volumes:
+      - ./src:/app/src:ro
+    depends_on:
+      db:
+        condition: service_healthy
+    stop_grace_period: 15s
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  migrate:
+    profiles: ["tools"]
+    build:
+      context: .
+      target: migration
+    environment:
+      NODE_ENV: development
+      DATABASE_URL_UNPOOLED: postgres://neon:npg@db:5432/${NEON_DATABASE_NAME:-neondb}?sslmode=no-verify
+    volumes:
+      - ./drizzle:/app/drizzle:ro
+      - ./src/model:/app/src/model:ro
+    depends_on:
+      db:
+        condition: service_healthy

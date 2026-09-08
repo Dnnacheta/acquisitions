@@ -1,0 +1,48 @@
+name: acquisitions-prod
+
+services:
+  app:
+    image: ${APP_IMAGE:-acquisitions:production}
+    build:
+      context: .
+      target: production
+    init: true
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      LOG_TO_FILE: "false"
+      DATABASE_URL: ${DATABASE_URL:?Set the pooled Neon Cloud URL}
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env.docker.prod}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-1h}
+      ARCJET_KEY: ${ARCJET_KEY:?Set ARCJET_KEY in .env.docker.prod}
+      ARCJET_TRUSTED_PROXIES: ${ARCJET_TRUSTED_PROXIES:-}
+    ports:
+      - "${APP_BIND_ADDRESS:-127.0.0.1}:${APP_PORT:-3000}:3000"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    stop_grace_period: 15s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  migrate:
+    profiles: ["tools"]
+    build:
+      context: .
+      target: migration
+    environment:
+      NODE_ENV: production
+      DATABASE_URL_UNPOOLED: ${DATABASE_URL_UNPOOLED:?Set the direct Neon Cloud migration URL}
+    restart: "no"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
