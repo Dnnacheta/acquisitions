@@ -281,7 +281,6 @@ and graceful shutdown checks. Application images are pinned to Node 24.20.0;
 update that image tag deliberately for maintenance. Neon Local is pinned to a
 tested digest in Compose; `NEON_LOCAL_IMAGE` can override it for upgrades.
 
-
 ### Sign up as an administrator with HTTPie
 
 Set `ADMIN_SIGNUP_KEY` to a long random secret in `.env.docker.dev` (or
@@ -306,3 +305,27 @@ Use your configured app port if different. The response includes an admin user
 and a bearer token for authenticated requests. Missing or incorrect signup keys
 return 403. Remove the configured key and recreate the app to disable further
 admin signups; existing admin accounts continue working.
+
+## GitHub Actions
+
+`.github/workflows/ci.yml` runs on pull requests, pushes to `main`, version tags
+(`v*`), and manual dispatch. It calls `checks.yml` to run lint/format checks and
+API tests in parallel, using Node from `.nvmrc` and `npm ci`.
+Tests use PGlite and mocked Arcjet clients; no Neon or Arcjet secrets are needed.
+
+Only after both checks pass, Docker builds the production and migration targets.
+Pull requests build without publishing. Main and version-tag runs publish the
+production image to `ghcr.io/dnnacheta/acquisitions` using GitHub's automatic
+`GITHUB_TOKEN` with package write permission. No Docker Hub account is required.
+Main publishes `latest`; version tags publish their exact tag (for example,
+`v1.0.0`). Published builds also receive a `sha-<full-commit-sha>` tag.
+
+Push these workflow files to activate the pipeline. View results in the GitHub
+Actions tab and images in the repository's Packages section. Enable the lint and
+API test checks in branch protection if you want to require them before merging.
+For private packages, the deployment host needs registry read access.
+
+This pipeline publishes images; it does not deploy to a server or run production
+migrations. Server deployment automation requires the target host and access
+configuration. Keep production database credentials and admin signup keys on the
+deployment host, outside the image and repository.

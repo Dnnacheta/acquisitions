@@ -27,3 +27,12 @@
 **/.env
 **/.env.*
 **/*.log
+
+# Installed agent skills and local tooling
+.agents/
+.codex/
+.neon/
+logs/
+
+# Generated migration metadata
+drizzle/meta/
