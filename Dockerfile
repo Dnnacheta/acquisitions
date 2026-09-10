@@ -8,6 +8,7 @@ COPY package.json package-lock.json ./
 RUN npm ci
 
 FROM dependencies AS development
+COPY --chown=node:node scripts/promote-admin.js ./scripts/
 COPY --chown=node:node src ./src
 COPY --chown=node:node drizzle ./drizzle
 COPY --chown=node:node drizzle.config.js ./
@@ -16,6 +17,7 @@ EXPOSE 3000
 CMD ["node", "--watch", "src/index.js"]
 
 FROM dependencies AS test
+COPY scripts/promote-admin.js ./scripts/
 COPY src ./src
 COPY test ./test
 COPY drizzle ./drizzle
@@ -31,6 +33,7 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
 
 FROM base AS production
+COPY --chown=node:node scripts/promote-admin.js ./scripts/
 ENV NODE_ENV=production
 COPY --from=production-dependencies --chown=node:node /app/node_modules ./node_modules
 COPY --chown=node:node package.json package-lock.json ./

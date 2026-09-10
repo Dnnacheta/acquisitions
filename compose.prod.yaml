@@ -15,6 +15,7 @@ services:
       LOG_TO_FILE: "false"
       DATABASE_URL: ${DATABASE_URL:?Set the pooled Neon Cloud URL}
       JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env.docker.prod}
+      ADMIN_SIGNUP_KEY: ${ADMIN_SIGNUP_KEY:-}
       JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-1h}
       ARCJET_KEY: ${ARCJET_KEY:?Set ARCJET_KEY in .env.docker.prod}
       ARCJET_TRUSTED_PROXIES: ${ARCJET_TRUSTED_PROXIES:-}

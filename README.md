@@ -2,6 +2,78 @@
 
 Express API with account registration, sign-in, and sign-out.
 
+## User CRUD and administrator access
+
+Public registration remains `POST /api/auth/sign-up` with name, email, and
+password. It defaults to a `user` account. Admin signup requires `role: "admin"` and
+a valid `X-Admin-Signup-Key` header. Send `Authorization: Bearer <token>` for user-management routes.
+
+| Method | Endpoint                     | Access and behavior                                                     |
+| ------ | ---------------------------- | ----------------------------------------------------------------------- |
+| POST   | `/api/users`                 | Admin: create a user or admin with name, email, password, optional role |
+| GET    | `/api/users?page=1&limit=20` | Admin: paginated users, sorted by ID; limit at most 100                 |
+| GET    | `/api/users/me`              | Any signed-in user: read own profile                                    |
+| GET    | `/api/users/:id`             | Own account or admin                                                    |
+| PATCH  | `/api/users/:id`             | Update selected fields on own account, or any account as admin          |
+| PUT    | `/api/users/:id`             | Set name and email; optional password and admin-only role               |
+| DELETE | `/api/users/:id`             | Permanently delete own account, or any account as admin                 |
+
+Use `me` instead of `:id` for your own account. Regular users cannot list other
+users, create accounts through the admin endpoint, or change roles. Roles are
+read from the database on each user-management request, so demotion and account
+deletion take effect with existing bearer tokens. Deleted accounts receive 401;
+admins requesting a missing target receive 404. Passwords/hashes are never
+returned. Admin account creation does not replace the administrator's session.
+
+Changing your own email or password requires `currentPassword` in the request.
+Admins may reset another user's password without knowing the old password.
+Duplicate email conflicts return 409 and invalid input returns 400. The database
+restricts roles to `user` and `admin`. Existing accounts default to `user`.
+User-management routes retain Arcjet protection.
+
+Controllers in `src/controllers/user.controller.js` expose `createUser`,
+`listUsers`, `getUserById`, `updateUser`, and `deleteUser`. Zod schemas in
+`src/validations/user.validation.js` validate bodies, IDs, and pagination,
+rejecting unexpected fields. Unexpected database failures are logged with the
+operation and error type and return a generic 500 response; passwords, tokens,
+and database error details are excluded from these logs.
+
+### Migrate and bootstrap the first administrator
+
+Apply the new role migration before using these endpoints. For Docker development:
+
+```sh
+./scripts/docker-dev.sh up
+./scripts/docker-dev.sh migrate
+# Register the intended account through /api/auth/sign-up, then:
+docker compose --env-file .env.docker.dev -f compose.dev.yaml exec app npm run user:promote-admin -- admin@example.com
+```
+
+For production, build the release, run `./scripts/docker-prod.sh migrate`, and
+start it with `./scripts/docker-prod.sh up`. An operator can then run:
+
+```sh
+docker compose --env-file .env.docker.prod -f compose.prod.yaml exec app npm run user:promote-admin -- admin@example.com
+```
+
+Without Docker, use `npm run db:migrate` then
+`npm run user:promote-admin -- admin@example.com` with the intended environment.
+The promotion command requires database credentials and promotes an existing
+account only; it is not exposed as a public HTTP endpoint. No account is
+promoted automatically. Additional role changes can use the authenticated API:
+
+```http
+PATCH /api/users/123
+Authorization: Bearer <admin-token>
+Content-Type: application/json
+
+{"role":"admin"}
+```
+
+Profile updates use the same route with fields such as `{"name":"Updated Name"}`.
+Password changes do not revoke existing stateless tokens before their expiry;
+role checks and account-existence checks still apply on every user route.
+
 ## Local setup
 
 ```sh
@@ -65,6 +137,22 @@ allow/deny/error handling and ensure denied routes do not access the database.
 ### Bash shortcuts
 
 Two scripts wrap the Compose commands below and work from any directory:
+
+You can also invoke them through npm:
+
+```sh
+npm run docker:dev                 # Build and start development
+npm run docker:dev -- status       # Also accepts logs, down, init, build, test
+npm run docker:dev:migrate
+npm run docker:prod                # Build and start production
+npm run docker:prod -- status
+npm run docker:prod:migrate
+```
+
+The admin promotion script is available as
+`npm run user:promote-admin -- admin@example.com`. It uses the environment of
+the process where it runs; use the Compose exec command above to run it inside
+the configured application container.
 
 ```sh
 ./scripts/docker-dev.sh init       # Preserves an existing environment file
@@ -192,3 +280,29 @@ These tests do not need Neon or Arcjet credentials. They include HTTP startup
 and graceful shutdown checks. Application images are pinned to Node 24.20.0;
 update that image tag deliberately for maintenance. Neon Local is pinned to a
 tested digest in Compose; `NEON_LOCAL_IMAGE` can override it for upgrades.
+
+
+### Sign up as an administrator with HTTPie
+
+Set `ADMIN_SIGNUP_KEY` to a long random secret in `.env.docker.dev` (or
+`.env.docker.prod` for production), then recreate the app using
+`npm run docker:dev` (or `npm run docker:prod`). For running without Docker,
+set it in `.env.local` and restart the server. A blank or unset key disables
+admin signup. Keep this key private; anyone with it can register as an admin.
+
+In HTTPie, send `POST http://localhost:3001/api/auth/sign-up` with the header
+`X-Admin-Signup-Key: <your configured key>` and this JSON body:
+
+```json
+{
+  "name": "Administrator",
+  "email": "admin@example.com",
+  "password": "your-long-password",
+  "role": "admin"
+}
+```
+
+Use your configured app port if different. The response includes an admin user
+and a bearer token for authenticated requests. Missing or incorrect signup keys
+return 403. Remove the configured key and recreate the app to disable further
+admin signups; existing admin accounts continue working.

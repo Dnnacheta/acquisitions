@@ -16,8 +16,13 @@
   },
   "scripts": {
     "test": "node --test",
+    "user:promote-admin": "node scripts/promote-admin.js",
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
+    "docker:dev": "bash scripts/docker-dev.sh",
+    "docker:prod": "bash scripts/docker-prod.sh",
+    "docker:dev:migrate": "bash scripts/docker-dev.sh migrate",
+    "docker:prod:migrate": "bash scripts/docker-prod.sh migrate",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:push": "drizzle-kit push",

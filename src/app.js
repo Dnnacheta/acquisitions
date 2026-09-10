@@ -5,6 +5,7 @@ import helmet from "helmet";
 import morgan from "morgan";
 import logger from "#config/logger.js";
 import authRouter from "#routes/auth.routes.js";
+import userRouter from "#routes/user.routes.js";
 import protection from "#config/arcjet.js";
 import { allowRequest } from "#utils/protection.js";
 
@@ -25,6 +26,7 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 app.use("/api/auth", authRouter);
+app.use("/api/users", userRouter);
 
 app.get("/api", async (req, res) => {
   if (!(await allowRequest(protection.publicProtection, req, res))) return;

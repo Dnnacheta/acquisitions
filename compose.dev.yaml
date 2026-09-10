@@ -27,6 +27,7 @@ services:
       LOG_TO_FILE: "false"
       DATABASE_URL: postgres://neon:npg@db:5432/${NEON_DATABASE_NAME:-neondb}?sslmode=no-verify
       JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env.docker.dev}
+      ADMIN_SIGNUP_KEY: ${ADMIN_SIGNUP_KEY:-}
       JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-1h}
       ARCJET_KEY: ${ARCJET_KEY:?Set ARCJET_KEY in .env.docker.dev}
       ARCJET_ENV: development

@@ -20,7 +20,7 @@ export const signUpSchema = z.strictObject({
     .max(255, "Name must be at most 255 characters"),
   email: emailSchema,
   password: passwordSchema.min(8, "Password must be at least 8 characters"),
-  role: z.literal("user").default("user"),
+  role: z.enum(["user", "admin"]).default("user"),
 });
 
 export const signInSchema = z.strictObject({

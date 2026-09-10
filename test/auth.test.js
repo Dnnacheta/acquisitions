@@ -18,7 +18,7 @@ process.env.ARCJET_KEY = "ajkey_test";
 const { default: db, pool } = await import("#config/database.js");
 const { default: logger } = await import("#config/logger.js");
 const { users } = await import("#model/user.model.js");
-const { verifyToken } = await import("#utils/jwt.js");
+const { verifyToken, signToken } = await import("#utils/jwt.js");
 const { hashPassword, verifyPassword } = await import("#utils/password.js");
 const { default: app } = await import("../src/app.js");
 const { default: protectionClients } = await import("#config/arcjet.js");
@@ -41,6 +41,8 @@ const errorLog = mock.method(logger, "error", () => {});
 mock.method(logger, "info", () => {});
 mock.method(db, "insert", (...args) => testDb.insert(...args));
 mock.method(db, "select", (...args) => testDb.select(...args));
+mock.method(db, "update", (...args) => testDb.update(...args));
+mock.method(db, "delete", (...args) => testDb.delete(...args));
 // A regression that bypasses the isolated database must fail, not access Neon.
 mock.method(pool, "query", () => {
   throw new Error("Live database access is forbidden in tests");
@@ -54,12 +56,20 @@ const seedEmail = "existing@example.com";
 let seedId;
 
 before(async () => {
-  await client.exec(
+  const journal = JSON.parse(
     await readFile(
-      new URL("../drizzle/0000_rainy_colonel_america.sql", import.meta.url),
+      new URL("../drizzle/meta/_journal.json", import.meta.url),
       "utf8",
     ),
   );
+  for (const migration of journal.entries) {
+    await client.exec(
+      await readFile(
+        new URL(`../drizzle/${migration.tag}.sql`, import.meta.url),
+        "utf8",
+      ),
+    );
+  }
   const [seed] = await testDb
     .insert(users)
     .values({
@@ -109,11 +119,11 @@ test("sign-up creates a normalized user with a hashed password and session", asy
   assertSession(response, stored.id);
 });
 
-test("validation rejects invalid fields and self-assigned admin roles", async () => {
+test("validation rejects invalid fields and unknown roles", async () => {
   for (const body of [
     {},
     { name: " ", email: "bad", password: "short" },
-    { name: "Test", email: "test@example.com", password, role: "admin" },
+    { name: "Test", email: "test@example.com", password, role: "owner" },
     { name: "Test", email: "test@example.com", password, passwordHash: "fake" },
   ]) {
     const response = await request(app)
@@ -300,4 +310,460 @@ test("health checks do not call Arcjet", async () => {
   const response = await request(app).get("/health").expect(200);
   assert.equal(response.body.status, "ok");
   assert.equal(publicProtection.protect.mock.callCount(), calls);
+});
+
+test("user CRUD creates, reads, updates, and deletes an owned account", async () => {
+  const created = await request(app)
+    .post("/api/auth/sign-up")
+    .send({
+      name: "CRUD User",
+      email: "crud@example.com",
+      password,
+    })
+    .expect(201);
+  const id = created.body.user.id;
+  const auth = `Bearer ${created.body.token}`;
+  assertSession(created, id);
+  for (const path of ["me", id]) {
+    const response = await request(app)
+      .get(`/api/users/${path}`)
+      .set("Authorization", auth)
+      .expect(200);
+    assert.equal(response.body.user.id, id);
+    assert.equal(response.body.user.passwordHash, undefined);
+    assert.equal(response.headers["cache-control"], "no-store");
+  }
+  const patched = await request(app)
+    .patch("/api/users/me")
+    .set("Authorization", auth)
+    .send({ name: " Updated Name " })
+    .expect(200);
+  assert.equal(patched.body.user.name, "Updated Name");
+  assert.equal(patched.body.user.email, "crud@example.com");
+  const replaced = await request(app)
+    .put(`/api/users/${id}`)
+    .set("Authorization", auth)
+    .send({
+      name: "Final Name",
+      email: " NEWCRUD@EXAMPLE.COM ",
+      currentPassword: password,
+    })
+    .expect(200);
+  assert.equal(replaced.body.user.email, "newcrud@example.com");
+  const deleted = await request(app)
+    .delete(`/api/users/${id}`)
+    .set("Authorization", auth)
+    .expect(200);
+  assert.ok(deleted.headers["set-cookie"][0].startsWith("token=;"));
+  assert.equal(
+    (await testDb.select().from(users).where(eq(users.id, id))).length,
+    0,
+  );
+  await request(app)
+    .get("/api/users/me")
+    .set("Authorization", auth)
+    .expect(401);
+  await request(app)
+    .patch("/api/users/me")
+    .set("Authorization", auth)
+    .send({ name: "Restore" })
+    .expect(401);
+  await request(app)
+    .delete("/api/users/me")
+    .set("Authorization", auth)
+    .expect(401);
+  await request(app)
+    .post("/api/auth/sign-in")
+    .send({ email: "newcrud@example.com", password })
+    .expect(401);
+});
+
+test("user routes require authentication and reject cross-account access", async () => {
+  const auth = `Bearer ${signToken(seedId)}`;
+  for (const method of ["get", "patch", "put", "delete"]) {
+    await request(app)[method]("/api/users/me").expect(401);
+    await request(app)
+      [method]("/api/users/me")
+      .set("Authorization", "Bearer invalid")
+      .expect(401);
+    await request(app)
+      [method](`/api/users/${seedId + 1000}`)
+      .set("Authorization", auth)
+      .expect(403);
+  }
+  for (const id of ["0", "-1", "abc", "1.5", "2147483648"]) {
+    await request(app)
+      .get(`/api/users/${id}`)
+      .set("Authorization", auth)
+      .expect(400);
+  }
+});
+
+test("user update validation rejects empty updates, invalid fields, and privileged fields", async () => {
+  const auth = `Bearer ${signToken(seedId)}`;
+  for (const body of [
+    {},
+    { name: " " },
+    { email: "invalid" },
+    { password: "short" },
+    { id: seedId + 1 },
+    { passwordHash: "fake" },
+    { createdAt: "2020-01-01" },
+    { currentPassword: password },
+  ]) {
+    await request(app)
+      .patch("/api/users/me")
+      .set("Authorization", auth)
+      .send(body)
+      .expect(400);
+  }
+  await request(app)
+    .put("/api/users/me")
+    .set("Authorization", auth)
+    .send({ name: "Only Name" })
+    .expect(400);
+});
+
+test("email and password changes require the correct current password", async () => {
+  const auth = `Bearer ${signToken(seedId)}`;
+  for (const change of [
+    { email: "changed@example.com" },
+    { password: "new long password" },
+  ]) {
+    for (const currentPassword of [undefined, "wrong password"]) {
+      await request(app)
+        .patch("/api/users/me")
+        .set("Authorization", auth)
+        .send({ ...change, currentPassword })
+        .expect(403);
+    }
+  }
+});
+
+test("duplicate email updates return 409 without changing the account", async () => {
+  const auth = `Bearer ${signToken(seedId)}`;
+  await request(app)
+    .patch("/api/users/me")
+    .set("Authorization", auth)
+    .send({ email: "new@example.com", currentPassword: password })
+    .expect(409);
+  const [record] = await testDb
+    .select()
+    .from(users)
+    .where(eq(users.id, seedId));
+  assert.equal(record.email, seedEmail);
+});
+
+test("password updates store a hash and change sign-in credentials", async () => {
+  const created = await request(app)
+    .post("/api/auth/sign-up")
+    .send({
+      name: "Password User",
+      email: "password-crud@example.com",
+      password,
+    })
+    .expect(201);
+  const newPassword = "  replacement password  ";
+  const response = await request(app)
+    .patch("/api/users/me")
+    .set("Authorization", `Bearer ${created.body.token}`)
+    .send({ password: newPassword, currentPassword: password })
+    .expect(200);
+  assert.equal(response.body.user.passwordHash, undefined);
+  const [record] = await testDb
+    .select()
+    .from(users)
+    .where(eq(users.id, created.body.user.id));
+  assert.notEqual(record.passwordHash, newPassword);
+  assert.ok(await verifyPassword(newPassword, record.passwordHash));
+  await request(app)
+    .post("/api/auth/sign-in")
+    .send({ email: record.email, password })
+    .expect(401);
+  await request(app)
+    .post("/api/auth/sign-in")
+    .send({ email: record.email, password: newPassword })
+    .expect(200);
+});
+
+test("Arcjet user denials prevent reads, updates, and deletes", async () => {
+  const original = publicProtection.protect;
+  publicProtection.protect = async () => ({
+    isDenied: () => true,
+    reason: { isRateLimit: () => true },
+  });
+  const counts = [db.select, db.update, db.delete].map(fn =>
+    fn.mock.callCount(),
+  );
+  try {
+    for (const method of ["get", "patch", "put", "delete"]) {
+      await request(app)
+        [method]("/api/users/me")
+        .set("Authorization", `Bearer ${signToken(seedId)}`)
+        .expect(429);
+    }
+    assert.deepEqual(
+      [db.select, db.update, db.delete].map(fn => fn.mock.callCount()),
+      counts,
+    );
+  } finally {
+    publicProtection.protect = original;
+  }
+});
+
+test("all user database failures are logged without leaking private details", async () => {
+  const admin = await createTestAdmin("error-tests@example.com");
+  for (const [method, path, dbMethod, operation, body, skip] of [
+    ["get", "/me", "select", "authorization", {}, 0],
+    ["get", "/me", "select", "read", {}, 1],
+    ["get", "", "select", "list", {}, 1],
+    [
+      "post",
+      "",
+      "insert",
+      "create",
+      { name: "New", email: "failure@example.com", password },
+      0,
+    ],
+    ["patch", "/me", "update", "update", { name: "Updated" }, 0],
+    ["delete", "/me", "delete", "delete", {}, 0],
+  ]) {
+    const original = db[dbMethod];
+    let calls = 0;
+    db[dbMethod] = (...args) => {
+      if (calls++ < skip) return original.apply(db, args);
+      throw new Error("PRIVATE database details");
+    };
+    const logCount = errorLog.mock.callCount();
+    try {
+      const response = await request(app)
+        [method](`/api/users${path}`)
+        .set("Authorization", admin.authorization)
+        .send(body)
+        .expect(500);
+      assert.deepEqual(response.body, {
+        message: "Something went wrong. Please try again later.",
+      });
+      assert.equal(errorLog.mock.callCount(), logCount + 1);
+      assert.deepEqual(errorLog.mock.calls.at(-1).arguments, [
+        `User ${operation} failed`,
+        { errorName: "Error" },
+      ]);
+    } finally {
+      db[dbMethod] = original;
+    }
+  }
+});
+
+async function createTestAdmin(email) {
+  const [admin] = await testDb
+    .insert(users)
+    .values({
+      name: "Admin",
+      email,
+      role: "admin",
+      passwordHash: await hashPassword(password),
+    })
+    .returning({ id: users.id });
+  return { id: admin.id, authorization: `Bearer ${signToken(admin.id)}` };
+}
+
+test("regular users cannot list, create users, or assign roles", async () => {
+  const auth = `Bearer ${signToken(seedId)}`;
+  await request(app).get("/api/users").expect(401);
+  await request(app).post("/api/users").expect(401);
+  await request(app).get("/api/users").set("Authorization", auth).expect(403);
+  await request(app)
+    .post("/api/users")
+    .set("Authorization", auth)
+    .send({
+      name: "Admin",
+      email: "denied@example.com",
+      password,
+      role: "admin",
+    })
+    .expect(403);
+  await request(app)
+    .patch("/api/users/me")
+    .set("Authorization", auth)
+    .send({ role: "admin" })
+    .expect(403);
+  const [record] = await testDb
+    .select()
+    .from(users)
+    .where(eq(users.id, seedId));
+  assert.equal(record.role, "user");
+});
+
+test("admin can create, list, read, update roles and delete other users", async () => {
+  const admin = await createTestAdmin("crud-admin@example.com");
+  const created = await request(app)
+    .post("/api/users")
+    .set("Authorization", admin.authorization)
+    .send({ name: "Managed", email: " MANAGED@EXAMPLE.COM ", password })
+    .expect(201);
+  assert.equal(created.body.user.role, "user");
+  assert.equal(created.body.user.email, "managed@example.com");
+  assert.equal(created.body.token, undefined);
+  assert.equal(created.headers["set-cookie"], undefined);
+  assert.equal(created.body.user.passwordHash, undefined);
+  const id = created.body.user.id;
+  const list = await request(app)
+    .get("/api/users?page=1&limit=2")
+    .set("Authorization", admin.authorization)
+    .expect(200);
+  assert.equal(list.body.users.length, 2);
+  assert.equal(list.body.hasMore, true);
+  assert.ok(list.body.users[0].id < list.body.users[1].id);
+  assert.ok(list.body.users.every(user => user.passwordHash === undefined));
+  await request(app)
+    .get(`/api/users/${id}`)
+    .set("Authorization", admin.authorization)
+    .expect(200);
+  const updated = await request(app)
+    .patch(`/api/users/${id}`)
+    .set("Authorization", admin.authorization)
+    .send({ role: "admin", name: "Promoted", password: "admin-reset-password" })
+    .expect(200);
+  assert.equal(updated.body.user.role, "admin");
+  await request(app)
+    .post("/api/auth/sign-in")
+    .send({ email: "managed@example.com", password: "admin-reset-password" })
+    .expect(200);
+  const deleted = await request(app)
+    .delete(`/api/users/${id}`)
+    .set("Authorization", admin.authorization)
+    .expect(200);
+  assert.equal(deleted.headers["set-cookie"], undefined);
+  await request(app)
+    .get(`/api/users/${id}`)
+    .set("Authorization", admin.authorization)
+    .expect(404);
+  await request(app)
+    .patch(`/api/users/${id}`)
+    .set("Authorization", admin.authorization)
+    .send({ name: "Missing" })
+    .expect(404);
+  await request(app)
+    .delete(`/api/users/${id}`)
+    .set("Authorization", admin.authorization)
+    .expect(404);
+});
+
+test("admin creation supports explicit roles and rejects duplicates and bad roles", async () => {
+  const admin = await createTestAdmin("validation-admin@example.com");
+  const response = await request(app)
+    .post("/api/users")
+    .set("Authorization", admin.authorization)
+    .send({
+      name: "Second Admin",
+      email: "second-admin@example.com",
+      password,
+      role: "admin",
+    })
+    .expect(201);
+  assert.equal(response.body.user.role, "admin");
+  await request(app)
+    .post("/api/users")
+    .set("Authorization", admin.authorization)
+    .send({ name: "Duplicate", email: " SECOND-ADMIN@EXAMPLE.COM ", password })
+    .expect(409);
+  await request(app)
+    .post("/api/users")
+    .set("Authorization", admin.authorization)
+    .send({
+      name: "Bad",
+      email: "bad-role@example.com",
+      password,
+      role: "superadmin",
+    })
+    .expect(400);
+  for (const query of [
+    "page=0",
+    "limit=101",
+    "limit=-1",
+    "page=abc",
+    "role=admin",
+  ]) {
+    await request(app)
+      .get(`/api/users?${query}`)
+      .set("Authorization", admin.authorization)
+      .expect(400);
+  }
+  const defaults = await request(app)
+    .get("/api/users")
+    .set("Authorization", admin.authorization)
+    .expect(200);
+  assert.equal(defaults.body.page, 1);
+  assert.equal(defaults.body.limit, 20);
+});
+
+test("database role changes and deleted accounts take effect with existing tokens", async () => {
+  const operator = await createTestAdmin("operator@example.com");
+  const other = await createTestAdmin("demoted@example.com");
+  await request(app)
+    .get("/api/users")
+    .set("Authorization", other.authorization)
+    .expect(200);
+  await request(app)
+    .patch(`/api/users/${other.id}`)
+    .set("Authorization", operator.authorization)
+    .send({ role: "user" })
+    .expect(200);
+  await request(app)
+    .get("/api/users")
+    .set("Authorization", other.authorization)
+    .expect(403);
+  await request(app)
+    .delete(`/api/users/${other.id}`)
+    .set("Authorization", operator.authorization)
+    .expect(200);
+  await request(app)
+    .get("/api/users/me")
+    .set("Authorization", other.authorization)
+    .expect(401);
+});
+
+test("admin signup requires the configured key and creates an admin session", async () => {
+  const previous = process.env.ADMIN_SIGNUP_KEY;
+  const body = {
+    name: "Signup Admin",
+    email: "signup-admin@example.com",
+    password,
+    role: "admin",
+  };
+  try {
+    delete process.env.ADMIN_SIGNUP_KEY;
+    await request(app)
+      .post("/api/auth/sign-up")
+      .set("X-Admin-Signup-Key", "test-key")
+      .send(body)
+      .expect(403);
+    process.env.ADMIN_SIGNUP_KEY = "test-admin-signup-key";
+    for (const key of ["", "wrong-key"]) {
+      const response = await request(app)
+        .post("/api/auth/sign-up")
+        .set("X-Admin-Signup-Key", key)
+        .send(body)
+        .expect(403);
+      assert.equal(response.headers["set-cookie"], undefined);
+    }
+    const response = await request(app)
+      .post("/api/auth/sign-up")
+      .set("X-Admin-Signup-Key", process.env.ADMIN_SIGNUP_KEY)
+      .send(body)
+      .expect(201);
+    assert.equal(response.body.user.role, "admin");
+    assert.equal(response.body.user.passwordHash, undefined);
+    assert.ok(
+      !JSON.stringify(response.body).includes(process.env.ADMIN_SIGNUP_KEY),
+    );
+    await request(app)
+      .get("/api/users")
+      .set("Authorization", `Bearer ${response.body.token}`)
+      .expect(200);
+  } finally {
+    if (previous === undefined) delete process.env.ADMIN_SIGNUP_KEY;
+    else process.env.ADMIN_SIGNUP_KEY = previous;
+  }
 });

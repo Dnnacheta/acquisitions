@@ -1,3 +1,4 @@
+import { createHash, timingSafeEqual } from "node:crypto";
 import { eq } from "drizzle-orm";
 import db from "#config/database.js";
 import logger from "#config/logger.js";
@@ -14,6 +15,7 @@ const publicFields = {
   id: users.id,
   name: users.name,
   email: users.email,
+  role: users.role,
   createdAt: users.createdAt,
   updatedAt: users.updatedAt,
 };
@@ -48,11 +50,25 @@ export async function signUp(req, res) {
   }
 
   try {
-    const { name, email, password } = result.data;
+    const { name, email, password, role } = result.data;
+    if (role === "admin") {
+      const expected = process.env.ADMIN_SIGNUP_KEY;
+      const supplied = req.get("X-Admin-Signup-Key");
+      const digest = value => createHash("sha256").update(value).digest();
+      if (
+        !expected ||
+        !supplied ||
+        !timingSafeEqual(digest(expected), digest(supplied))
+      ) {
+        return res
+          .status(403)
+          .json({ message: "Admin signup is not authorized" });
+      }
+    }
     const passwordHash = await hashPassword(password);
     const [user] = await db
       .insert(users)
-      .values({ name, email, passwordHash })
+      .values({ name, email, passwordHash, role })
       .onConflictDoNothing({ target: users.email })
       .returning(publicFields);
 
