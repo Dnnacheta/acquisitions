@@ -1,9 +1,7 @@
 import express from "express";
+import api from "./src/app.js";
 
+// Vercel discovers this entry point; Docker uses src/index.js instead.
 const app = express();
-
-const PORT = process.env.PORT || 3000;
-
-app.listen(PORT, () => {
-  console.log(`Listening on ${PORT}...`);
-});
+app.use(api);
+export default app;

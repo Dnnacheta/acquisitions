@@ -10,6 +10,7 @@ RUN npm ci
 FROM dependencies AS development
 COPY --chown=node:node scripts/promote-admin.js ./scripts/
 COPY --chown=node:node src ./src
+COPY --chown=node:node public ./public
 COPY --chown=node:node drizzle ./drizzle
 COPY --chown=node:node drizzle.config.js ./
 USER node
@@ -19,6 +20,8 @@ CMD ["node", "--watch", "src/index.js"]
 FROM dependencies AS test
 COPY scripts/promote-admin.js ./scripts/
 COPY src ./src
+COPY public ./public
+COPY index.js ./
 COPY test ./test
 COPY drizzle ./drizzle
 COPY eslint.config.js .prettierrc ./
@@ -38,6 +41,7 @@ ENV NODE_ENV=production
 COPY --from=production-dependencies --chown=node:node /app/node_modules ./node_modules
 COPY --chown=node:node package.json package-lock.json ./
 COPY --chown=node:node src ./src
+COPY --chown=node:node public ./public
 USER node
 EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \

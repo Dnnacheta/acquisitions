@@ -18,7 +18,7 @@ const consoleTransport = new winston.transports.Console({
 });
 
 const transports = [consoleTransport];
-if (process.env.LOG_TO_FILE !== "false") {
+if (process.env.VERCEL !== "1" && process.env.LOG_TO_FILE !== "false") {
   mkdirSync(logsDirectory, { recursive: true });
   transports.push(
     new winston.transports.File({

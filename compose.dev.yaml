@@ -1,6 +1,11 @@
 name: acquisitions-dev
 
 services:
+  mailpit:
+    image: axllent/mailpit:v1.27
+    ports:
+      - "127.0.0.1:${MAILPIT_PORT:-8025}:8025"
+
   db:
     image: ${NEON_LOCAL_IMAGE:-neondatabase/neon_local@sha256:15e20ade47a80ae8285d6dbb6877f7482b305eb1021dd5119d33055dce9407ce}
     environment:
@@ -31,10 +36,16 @@ services:
       JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-1h}
       ARCJET_KEY: ${ARCJET_KEY:?Set ARCJET_KEY in .env.docker.dev}
       ARCJET_ENV: development
+      APP_BASE_URL: ${APP_BASE_URL:-http://localhost:${APP_PORT:-3000}}
+      SMTP_HOST: mailpit
+      SMTP_PORT: "1025"
+      SMTP_SECURE: "false"
+      MAIL_FROM: ${MAIL_FROM:-Acquisitions <noreply@example.test>}
     ports:
       - "127.0.0.1:${APP_PORT:-3000}:3000"
     volumes:
       - ./src:/app/src:ro
+      - ./public:/app/public:ro
     depends_on:
       db:
         condition: service_healthy

@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="referrer" content="no-referrer" />
+    <title>Acquisitions account</title>
+    <script src="/account-assets/account.js" defer></script>
+  </head>
+  <body>
+    <main>
+      <h1 id="heading">Acquisitions account</h1>
+      <form id="account-form">
+        <p id="password-field" hidden>
+          <label for="password">New password (8–128 characters)</label>
+          <input
+            id="password"
+            name="password"
+            type="password"
+            autocomplete="new-password"
+            minlength="8"
+            maxlength="128"
+          />
+        </p>
+        <button id="submit" type="submit">Continue</button>
+      </form>
+      <p id="status" role="status" aria-live="polite"></p>
+      <noscript>Enable JavaScript to complete this action.</noscript>
+    </main>
+  </body>
+</html>

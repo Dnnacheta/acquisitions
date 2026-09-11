@@ -7,3 +7,5 @@ env.docker.*
 !.env.*.example
 .neon_local/
 logs/
+
+.vercel/

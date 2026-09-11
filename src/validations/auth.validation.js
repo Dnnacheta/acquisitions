@@ -27,3 +27,11 @@ export const signInSchema = z.strictObject({
   email: emailSchema,
   password: passwordSchema.min(1, "Password is required"),
 });
+
+export const emailRequestSchema = z.strictObject({ email: emailSchema });
+export const actionTokenSchema = z.strictObject({
+  token: z.string().regex(/^[a-f0-9]{64}$/, "Invalid token"),
+});
+export const resetPasswordSchema = actionTokenSchema.extend({
+  password: passwordSchema.min(8, "Password must be at least 8 characters"),
+});

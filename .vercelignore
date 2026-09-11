@@ -1,0 +1,14 @@
+.env
+.env.*
+env.docker.*
+.agents
+.codex
+.specify
+.neon
+.neon_local
+logs
+node_modules
+coverage
+CODEBASE_INDEX.md
+exit
+help

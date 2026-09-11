@@ -33,4 +33,12 @@ const signUpProtection = aj.withRule(
   slidingWindow({ mode: "LIVE", interval: "10m", max: 5 }),
 );
 
-export default { publicProtection, signInProtection, signUpProtection };
+const recoveryProtection = aj.withRule(
+  slidingWindow({ mode: "LIVE", interval: "10m", max: 5 }),
+);
+export default {
+  publicProtection,
+  signInProtection,
+  signUpProtection,
+  recoveryProtection,
+};

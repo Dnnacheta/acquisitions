@@ -1,3 +1,4 @@
+import { sendAccountLink } from "#utils/account-tokens.js";
 import { and, asc, eq } from "drizzle-orm";
 import db from "#config/database.js";
 import logger from "#config/logger.js";
@@ -20,6 +21,7 @@ const publicFields = {
   name: users.name,
   email: users.email,
   role: users.role,
+  emailVerifiedAt: users.emailVerifiedAt,
   createdAt: users.createdAt,
   updatedAt: users.updatedAt,
 };
@@ -30,12 +32,20 @@ async function authorize(req, res, adminOnly = false) {
     return false;
   try {
     const [actor] = await db
-      .select({ id: users.id, role: users.role })
+      .select({
+        id: users.id,
+        role: users.role,
+        sessionVersion: users.sessionVersion,
+      })
       .from(users)
       .where(eq(users.id, req.user.id))
       .limit(1);
     if (!actor) {
       res.status(401).json({ message: "Account no longer exists" });
+      return false;
+    }
+    if (actor.sessionVersion !== req.sessionVersion) {
+      res.status(401).json({ message: "Invalid or expired token" });
       return false;
     }
     req.user.role = actor.role;
@@ -122,6 +132,24 @@ export async function updateUser(req, res) {
     if (role !== undefined) values.role = role;
     if (name !== undefined) values.name = name;
     if (email !== undefined) values.email = email;
+    if (email !== undefined && email !== record.email) {
+      Object.assign(values, {
+        emailVerifiedAt: null,
+        verificationTokenHash: null,
+        verificationExpiresAt: null,
+        verificationSentAt: null,
+        resetTokenHash: null,
+        resetExpiresAt: null,
+        resetSentAt: null,
+      });
+    }
+    if (password !== undefined) {
+      Object.assign(values, {
+        resetTokenHash: null,
+        resetExpiresAt: null,
+        resetSentAt: null,
+      });
+    }
     if (password !== undefined)
       values.passwordHash = await hashPassword(password);
     // Reject concurrent credential changes rather than overwriting newer credentials.
@@ -139,6 +167,12 @@ export async function updateUser(req, res) {
       return res
         .status(409)
         .json({ message: "Account changed. Reload and try again." });
+    if (email !== undefined && email !== record.email) {
+      await sendAccountLink(
+        { ...user, passwordHash: values.passwordHash ?? record.passwordHash },
+        "verification",
+      );
+    }
     return res.status(200).json({ message: "User updated successfully", user });
   } catch (error) {
     return handleError(res, error, "update");
@@ -167,13 +201,15 @@ export async function createUser(req, res) {
     return res.status(400).json(formatValidationError(parsed.error));
   try {
     const { name, email, password, role } = parsed.data;
+    const passwordHash = await hashPassword(password);
     const [user] = await db
       .insert(users)
-      .values({ name, email, role, passwordHash: await hashPassword(password) })
+      .values({ name, email, role, passwordHash })
       .onConflictDoNothing({ target: users.email })
       .returning(publicFields);
     if (!user)
       return res.status(409).json({ message: "Email is already registered" });
+    await sendAccountLink({ ...user, passwordHash }, "verification");
     return res.status(201).json({ message: "User created successfully", user });
   } catch (error) {
     return handleError(res, error, "create");

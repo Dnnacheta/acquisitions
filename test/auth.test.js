@@ -14,13 +14,14 @@ process.env.JWT_SECRET = randomBytes(48).toString("hex");
 process.env.JWT_EXPIRES_IN = "1h";
 process.env.NODE_ENV = "production";
 process.env.ARCJET_KEY = "ajkey_test";
+process.env.APP_BASE_URL = "https://app.example.test";
 
 const { default: db, pool } = await import("#config/database.js");
 const { default: logger } = await import("#config/logger.js");
 const { users } = await import("#model/user.model.js");
 const { verifyToken, signToken } = await import("#utils/jwt.js");
 const { hashPassword, verifyPassword } = await import("#utils/password.js");
-const { default: app } = await import("../src/app.js");
+const { default: app } = await import("../index.js");
 const { default: protectionClients } = await import("#config/arcjet.js");
 
 // Never send test requests or credentials to Arcjet.
@@ -37,6 +38,11 @@ const { publicProtection, signInProtection, signUpProtection } =
 
 const client = new PGlite();
 const testDb = drizzle(client);
+const { default: emailDelivery } = await import("#utils/email.js");
+const sentEmails = [];
+mock.method(emailDelivery, "send", async message => {
+  sentEmails.push(message);
+});
 const errorLog = mock.method(logger, "error", () => {});
 mock.method(logger, "info", () => {});
 mock.method(db, "insert", (...args) => testDb.insert(...args));
@@ -766,4 +772,596 @@ test("admin signup requires the configured key and creates an admin session", as
     if (previous === undefined) delete process.env.ADMIN_SIGNUP_KEY;
     else process.env.ADMIN_SIGNUP_KEY = previous;
   }
+});
+
+function emailToken(message = sentEmails.at(-1)) {
+  const url = message.text.match(/https:\/\/[^\s]+/)[0];
+  return new URLSearchParams(new URL(url).hash.slice(1)).get("token");
+}
+
+async function recoveryUser(label) {
+  const response = await request(app)
+    .post("/api/auth/sign-up")
+    .send({
+      name: "Recovery",
+      email: `${label}@example.com`,
+      password,
+    })
+    .expect(201);
+  return response.body;
+}
+
+test("signup sends a hashed, expiring verification link consumed only once", async () => {
+  const { user } = await recoveryUser("verify-flow");
+  assert.equal(user.emailVerifiedAt, null);
+  const token = emailToken();
+  const [stored] = await testDb
+    .select()
+    .from(users)
+    .where(eq(users.id, user.id));
+  assert.notEqual(stored.verificationTokenHash, token);
+  assert.equal(stored.verificationTokenHash.length, 64);
+  assert.ok(stored.verificationExpiresAt > new Date());
+  assert.equal(user.verificationTokenHash, undefined);
+  await request(app)
+    .post("/api/auth/reset-password")
+    .send({ token, password: "replacement password" })
+    .expect(400);
+  const responses = await Promise.all(
+    [1, 2].map(() =>
+      request(app).post("/api/auth/verify-email").send({ token }),
+    ),
+  );
+  assert.deepEqual(responses.map(r => r.status).sort(), [200, 400]);
+  const [verified] = await testDb
+    .select()
+    .from(users)
+    .where(eq(users.id, user.id));
+  assert.ok(verified.emailVerifiedAt);
+  assert.equal(verified.verificationTokenHash, null);
+});
+
+test("password reset is single use, changes credentials and revokes existing sessions", async () => {
+  const account = await recoveryUser("reset-flow");
+  const response = await request(app)
+    .post("/api/auth/forgot-password")
+    .send({ email: account.user.email })
+    .expect(202);
+  assert.equal(response.body.token, undefined);
+  const token = emailToken();
+  await request(app).post("/api/auth/verify-email").send({ token }).expect(400);
+  const newPassword = "new reset passphrase";
+  const responses = await Promise.all(
+    [1, 2].map(() =>
+      request(app)
+        .post("/api/auth/reset-password")
+        .send({ token, password: newPassword }),
+    ),
+  );
+  assert.deepEqual(responses.map(r => r.status).sort(), [200, 400]);
+  await request(app)
+    .get("/api/users/me")
+    .set("Authorization", `Bearer ${account.token}`)
+    .expect(401);
+  await request(app)
+    .post("/api/auth/sign-in")
+    .send({ email: account.user.email, password })
+    .expect(401);
+  const signedIn = await request(app)
+    .post("/api/auth/sign-in")
+    .send({ email: account.user.email, password: newPassword })
+    .expect(200);
+  await request(app)
+    .get("/api/users/me")
+    .set("Authorization", `Bearer ${signedIn.body.token}`)
+    .expect(200);
+});
+
+test("email requests hide account existence and enforce a per-account cooldown", async () => {
+  const { user } = await recoveryUser("cooldown");
+  for (const path of ["forgot-password", "request-email-verification"]) {
+    const existing = await request(app)
+      .post(`/api/auth/${path}`)
+      .send({ email: user.email })
+      .expect(202);
+    const count = sentEmails.length;
+    const repeated = await request(app)
+      .post(`/api/auth/${path}`)
+      .send({ email: user.email })
+      .expect(202);
+    const missing = await request(app)
+      .post(`/api/auth/${path}`)
+      .send({ email: "missing-recovery@example.com" })
+      .expect(202);
+    assert.deepEqual(existing.body, missing.body);
+    assert.deepEqual(repeated.body, missing.body);
+    assert.equal(sentEmails.length, count);
+  }
+});
+
+test("expired and replaced action tokens cannot be consumed", async () => {
+  const { user } = await recoveryUser("expired");
+  const oldVerification = emailToken();
+  await testDb
+    .update(users)
+    .set({
+      verificationExpiresAt: new Date(0),
+      verificationSentAt: new Date(0),
+    })
+    .where(eq(users.id, user.id));
+  await request(app)
+    .post("/api/auth/verify-email")
+    .send({ token: oldVerification })
+    .expect(400);
+  await request(app)
+    .post("/api/auth/request-email-verification")
+    .send({ email: user.email })
+    .expect(202);
+  const newVerification = emailToken();
+  assert.notEqual(oldVerification, newVerification);
+  await request(app)
+    .post("/api/auth/verify-email")
+    .send({ token: oldVerification })
+    .expect(400);
+  await request(app)
+    .post("/api/auth/verify-email")
+    .send({ token: newVerification })
+    .expect(200);
+  await request(app)
+    .post("/api/auth/forgot-password")
+    .send({ email: user.email })
+    .expect(202);
+  const resetToken = emailToken();
+  await testDb
+    .update(users)
+    .set({ resetExpiresAt: new Date(0) })
+    .where(eq(users.id, user.id));
+  await request(app)
+    .post("/api/auth/reset-password")
+    .send({ token: resetToken, password: "another password" })
+    .expect(400);
+});
+
+test("email changes invalidate verification and outstanding recovery links", async () => {
+  const account = await recoveryUser("email-change");
+  const oldVerification = emailToken();
+  await request(app)
+    .post("/api/auth/forgot-password")
+    .send({ email: account.user.email })
+    .expect(202);
+  const oldReset = emailToken();
+  await request(app)
+    .patch("/api/users/me")
+    .set("Authorization", `Bearer ${account.token}`)
+    .send({ email: "new-email-change@example.com", currentPassword: password })
+    .expect(200);
+  await request(app)
+    .post("/api/auth/verify-email")
+    .send({ token: oldVerification })
+    .expect(400);
+  await request(app)
+    .post("/api/auth/reset-password")
+    .send({ token: oldReset, password: "another password" })
+    .expect(400);
+  const [stored] = await testDb
+    .select()
+    .from(users)
+    .where(eq(users.id, account.user.id));
+  assert.equal(stored.emailVerifiedAt, null);
+});
+
+test("recovery validates input and Arcjet denies before database or email work", async () => {
+  for (const path of [
+    "forgot-password",
+    "request-email-verification",
+    "verify-email",
+    "reset-password",
+  ]) {
+    await request(app).post(`/api/auth/${path}`).send({}).expect(400);
+  }
+  await request(app)
+    .post("/api/auth/reset-password")
+    .send({ token: "a".repeat(64), password: "short" })
+    .expect(400);
+  const original = protectionClients.recoveryProtection.protect;
+  protectionClients.recoveryProtection.protect = async () => ({
+    isDenied: () => true,
+    reason: {
+      isRateLimit: () => true,
+      resetTime: new Date(Date.now() + 60000),
+    },
+  });
+  const count = sentEmails.length;
+  const selects = db.select.mock.callCount();
+  try {
+    for (const path of [
+      "forgot-password",
+      "request-email-verification",
+      "verify-email",
+      "reset-password",
+    ]) {
+      await request(app)
+        .post(`/api/auth/${path}`)
+        .send({ email: seedEmail })
+        .expect(429);
+    }
+    assert.equal(sentEmails.length, count);
+    assert.equal(db.select.mock.callCount(), selects);
+  } finally {
+    protectionClients.recoveryProtection.protect = original;
+  }
+});
+
+test("delivery failures are private and permit retry without losing the account", async () => {
+  const original = emailDelivery.send;
+  emailDelivery.send = async () => {
+    throw new Error("PRIVATE SMTP password");
+  };
+  try {
+    const { user } = await recoveryUser("delivery-failure");
+    const response = await request(app)
+      .post("/api/auth/forgot-password")
+      .send({ email: user.email })
+      .expect(202);
+    assert.ok(!JSON.stringify(response.body).includes("PRIVATE"));
+    const [stored] = await testDb
+      .select()
+      .from(users)
+      .where(eq(users.id, user.id));
+    assert.equal(stored.resetTokenHash, null);
+    assert.equal(stored.resetSentAt, null);
+    assert.deepEqual(errorLog.mock.calls.at(-1).arguments, [
+      "Account email delivery failed",
+      { purpose: "reset" },
+    ]);
+  } finally {
+    emailDelivery.send = original;
+  }
+});
+
+test("account link pages load without consuming tokens", async () => {
+  for (const path of ["verify-email", "reset-password"]) {
+    const response = await request(app).get(`/${path}`).expect(200);
+    assert.equal(response.headers["cache-control"], "no-store");
+    assert.match(response.text, /account-form/);
+    assert.match(
+      response.headers["content-security-policy"],
+      /script-src 'self'/,
+    );
+  }
+  await request(app).get("/account-assets/account.js").expect(200);
+});
+
+test("action database failures log safe errors and do not consume tokens", async () => {
+  const original = db.update;
+  db.update = () => {
+    throw new Error("PRIVATE SQL token");
+  };
+  try {
+    for (const [path, operation] of [
+      ["verify-email", "Email verification"],
+      ["reset-password", "Password reset"],
+    ]) {
+      const response = await request(app)
+        .post(`/api/auth/${path}`)
+        .send({
+          token: "a".repeat(64),
+          ...(path === "reset-password"
+            ? { password: "new password value" }
+            : {}),
+        })
+        .expect(500);
+      assert.deepEqual(response.body, {
+        message: "Something went wrong. Please try again later.",
+      });
+      assert.deepEqual(errorLog.mock.calls.at(-1).arguments, [
+        `${operation} failed`,
+        { errorName: "Error" },
+      ]);
+    }
+  } finally {
+    db.update = original;
+  }
+});
+
+test("verified accounts do not receive redundant verification emails", async () => {
+  const { user } = await recoveryUser("already-verified");
+  await request(app)
+    .post("/api/auth/verify-email")
+    .send({ token: emailToken() })
+    .expect(200);
+  const count = sentEmails.length;
+  await request(app)
+    .post("/api/auth/request-email-verification")
+    .send({ email: user.email })
+    .expect(202);
+  assert.equal(sentEmails.length, count);
+});
+
+test("changing a password invalidates outstanding reset links", async () => {
+  const account = await recoveryUser("password-change-link");
+  await request(app)
+    .post("/api/auth/forgot-password")
+    .send({ email: account.user.email })
+    .expect(202);
+  const token = emailToken();
+  await request(app)
+    .patch("/api/users/me")
+    .set("Authorization", `Bearer ${account.token}`)
+    .send({ password: "changed via profile", currentPassword: password })
+    .expect(200);
+  await request(app)
+    .post("/api/auth/reset-password")
+    .send({ token, password: "must not work" })
+    .expect(400);
+});
+
+const { customers, leads } = await import("#model/crm.model.js");
+const customerBody = {
+  name: "Ada Okafor",
+  email: "ada@customer.example",
+  company: "Greenfield Studio",
+  phone: "+234 800 000 0000",
+  notes: "Met at the Lagos event",
+};
+const leadBody = {
+  title: "Annual support contract",
+  company: "Greenfield Studio",
+  contactName: "Ada",
+  value: 250000.5,
+  source: "Referral",
+  followUpDate: "2026-12-15",
+};
+const crmRequest = (method, path, token, body) =>
+  request(app)
+    [method](`/api/crm${path}`)
+    .set("Authorization", `Bearer ${token}`)
+    .send(body);
+
+test("CRM supports full customer and lead CRUD and preserves omitted patch fields", async () => {
+  const account = await recoveryUser("crm-crud");
+  const customer = (
+    await crmRequest("post", "/customers", account.token, customerBody).expect(
+      201,
+    )
+  ).body.record;
+  assert.equal(customer.ownerId, account.user.id);
+  const lead = (
+    await crmRequest("post", "/leads", account.token, {
+      ...leadBody,
+      customerId: customer.id,
+    }).expect(201)
+  ).body.record;
+  await crmRequest("get", `/customers/${customer.id}`, account.token).expect(
+    200,
+  );
+  const update = await crmRequest("patch", `/leads/${lead.id}`, account.token, {
+    stage: "qualified",
+  }).expect(200);
+  assert.equal(update.body.record.stage, "qualified");
+  assert.equal(Number(update.body.record.value), leadBody.value);
+  assert.equal(update.body.record.customerId, customer.id);
+  assert.equal(update.body.record.followUpDate, leadBody.followUpDate);
+  assert.equal(update.body.record.source, "Referral");
+  const customerUpdate = await crmRequest(
+    "patch",
+    `/customers/${customer.id}`,
+    account.token,
+    { name: "Ada O." },
+  ).expect(200);
+  assert.equal(customerUpdate.body.record.notes, customerBody.notes);
+  assert.equal(customerUpdate.body.record.company, customerBody.company);
+  const overview = (
+    await crmRequest("get", "/overview", account.token).expect(200)
+  ).body;
+  assert.equal(overview.customers, 1);
+  assert.equal(overview.pipeline[0].stage, "qualified");
+  assert.equal(Number(overview.pipeline[0].value), leadBody.value);
+  assert.equal(overview.followUps[0].id, lead.id);
+  await crmRequest("delete", `/customers/${customer.id}`, account.token).expect(
+    200,
+  );
+  const retained = (
+    await crmRequest("get", `/leads/${lead.id}`, account.token).expect(200)
+  ).body.record;
+  assert.equal(retained.customerId, null);
+  await crmRequest("delete", `/leads/${lead.id}`, account.token).expect(200);
+  await crmRequest("get", `/leads/${lead.id}`, account.token).expect(404);
+});
+
+test("CRM isolates salespeople and permits administrators to manage team records", async () => {
+  const owner = await recoveryUser("crm-owner");
+  const other = await recoveryUser("crm-other");
+  const admin = await createTestAdmin("crm-admin@example.com");
+  const customer = (
+    await crmRequest("post", "/customers", owner.token, customerBody).expect(
+      201,
+    )
+  ).body.record;
+  const lead = (
+    await crmRequest("post", "/leads", owner.token, leadBody).expect(201)
+  ).body.record;
+  for (const [resource, record] of [
+    ["customers", customer],
+    ["leads", lead],
+  ]) {
+    for (const method of ["get", "patch", "delete"]) {
+      await crmRequest(
+        method,
+        `/${resource}/${record.id}`,
+        other.token,
+        method === "patch" ? { notes: "Not allowed" } : undefined,
+      ).expect(404);
+    }
+    const list = await crmRequest("get", `/${resource}`, other.token).expect(
+      200,
+    );
+    assert.equal(list.body.total, 0);
+    await request(app)
+      .patch(`/api/crm/${resource}/${record.id}`)
+      .set("Authorization", admin.authorization)
+      .send({ notes: "Admin note" })
+      .expect(200);
+  }
+  const overview = (
+    await crmRequest("get", "/overview", other.token).expect(200)
+  ).body;
+  assert.equal(overview.customers, 0);
+  assert.deepEqual(overview.pipeline, []);
+  await crmRequest("post", "/leads", other.token, {
+    ...leadBody,
+    customerId: customer.id,
+  }).expect(400);
+  await crmRequest("post", "/customers", other.token, {
+    ...customerBody,
+    ownerId: owner.user.id,
+  }).expect(400);
+});
+
+test("CRM validates fields, identifiers, pagination, and empty patches", async () => {
+  const account = await recoveryUser("crm-validation");
+  for (const body of [
+    {},
+    { ...customerBody, email: "bad" },
+    { ...customerBody, status: "archived" },
+    { ...customerBody, notes: "a".repeat(5001) },
+  ]) {
+    await crmRequest("post", "/customers", account.token, body).expect(400);
+  }
+  for (const body of [
+    {},
+    { ...leadBody, value: -1 },
+    { ...leadBody, value: 1.001 },
+    { ...leadBody, stage: "invalid" },
+    { ...leadBody, followUpDate: "2026-02-31" },
+    { ...leadBody, customerId: 2147483647 },
+  ]) {
+    await crmRequest("post", "/leads", account.token, body).expect(400);
+  }
+  for (const resource of ["customers", "leads"]) {
+    await crmRequest("get", `/${resource}/0`, account.token).expect(400);
+    await crmRequest("patch", `/${resource}/1`, account.token, {}).expect(400);
+    for (const query of [
+      "page=0",
+      "limit=101",
+      "search=" + "a".repeat(101),
+      "ownerId=1",
+    ]) {
+      await crmRequest("get", `/${resource}?${query}`, account.token).expect(
+        400,
+      );
+    }
+  }
+});
+
+test("CRM lists paginate, filter and search without treating wildcards as data access", async () => {
+  const account = await recoveryUser("crm-search");
+  await crmRequest("post", "/customers", account.token, customerBody).expect(
+    201,
+  );
+  await crmRequest("post", "/customers", account.token, {
+    ...customerBody,
+    name: "Second",
+    status: "inactive",
+  }).expect(201);
+  const first = await crmRequest(
+    "get",
+    "/customers?limit=1",
+    account.token,
+  ).expect(200);
+  assert.equal(first.body.total, 2);
+  assert.equal(first.body.hasMore, true);
+  const second = await crmRequest(
+    "get",
+    "/customers?limit=1&page=2",
+    account.token,
+  ).expect(200);
+  assert.notEqual(first.body.customers[0].id, second.body.customers[0].id);
+  const filtered = await crmRequest(
+    "get",
+    "/customers?status=inactive&search=second",
+    account.token,
+  ).expect(200);
+  assert.equal(filtered.body.total, 1);
+  const wildcard = await crmRequest(
+    "get",
+    "/customers?search=%25",
+    account.token,
+  ).expect(200);
+  assert.equal(wildcard.body.total, 0);
+});
+
+test("CRM rejects missing or revoked sessions and rate limits before database work", async () => {
+  for (const path of ["/overview", "/customers", "/leads"])
+    await request(app).get(`/api/crm${path}`).expect(401);
+  const account = await recoveryUser("crm-session");
+  await testDb
+    .update(users)
+    .set({ sessionVersion: 1 })
+    .where(eq(users.id, account.user.id));
+  await crmRequest("get", "/overview", account.token).expect(401);
+  const original = publicProtection.protect;
+  publicProtection.protect = async () => ({
+    isDenied: () => true,
+    reason: { isRateLimit: () => true },
+  });
+  const calls = db.select.mock.callCount();
+  try {
+    await crmRequest("get", "/customers", signToken(seedId)).expect(429);
+    assert.equal(db.select.mock.callCount(), calls);
+  } finally {
+    publicProtection.protect = original;
+  }
+});
+
+test("CRM retains business records when a user is deleted", async () => {
+  const account = await recoveryUser("crm-deleted-owner");
+  const customer = (
+    await crmRequest("post", "/customers", account.token, customerBody).expect(
+      201,
+    )
+  ).body.record;
+  const lead = (
+    await crmRequest("post", "/leads", account.token, leadBody).expect(201)
+  ).body.record;
+  await testDb.delete(users).where(eq(users.id, account.user.id));
+  const [storedCustomer] = await testDb
+    .select()
+    .from(customers)
+    .where(eq(customers.id, customer.id));
+  const [storedLead] = await testDb
+    .select()
+    .from(leads)
+    .where(eq(leads.id, lead.id));
+  assert.equal(storedCustomer.ownerId, null);
+  assert.equal(storedLead.ownerId, null);
+});
+
+test("CRM logs database errors without leaking record contents", async () => {
+  const original = db.select;
+  db.select = () => {
+    throw new Error("PRIVATE customer details");
+  };
+  try {
+    const response = await crmRequest(
+      "get",
+      "/customers",
+      signToken(seedId),
+    ).expect(500);
+    assert.ok(!JSON.stringify(response.body).includes("PRIVATE"));
+    assert.deepEqual(errorLog.mock.calls.at(-1).arguments, [
+      "CRM operation failed",
+      { operation: "customers.list", errorName: "Error" },
+    ]);
+  } finally {
+    db.select = original;
+  }
+});
+
+test("CRM frontend and assets are served from the application entry point", async () => {
+  const page = await request(app).get("/").expect(200);
+  assert.match(page.text, /crm-assets\/app.js/);
+  await request(app).get("/crm-assets/app.js").expect(200);
+  await request(app).get("/crm-assets/app.css").expect(200);
+  await request(app).get("/crm-assets/layout.css").expect(200);
 });

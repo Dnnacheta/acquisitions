@@ -1,4 +1,5 @@
 import { createHash, timingSafeEqual } from "node:crypto";
+import { sendAccountLink } from "#utils/account-tokens.js";
 import { eq } from "drizzle-orm";
 import db from "#config/database.js";
 import logger from "#config/logger.js";
@@ -16,6 +17,7 @@ const publicFields = {
   name: users.name,
   email: users.email,
   role: users.role,
+  emailVerifiedAt: users.emailVerifiedAt,
   createdAt: users.createdAt,
   updatedAt: users.updatedAt,
 };
@@ -35,8 +37,8 @@ export async function signOut(req, res) {
   }
 }
 
-function sendSession(res, status, message, user) {
-  const token = signToken(user.id);
+function sendSession(res, status, message, user, sessionVersion = 0) {
+  const token = signToken(user.id, sessionVersion);
   res.set("Cache-Control", "no-store");
   setCookie(res, "token", token);
   return res.status(status).json({ message, user, token });
@@ -76,6 +78,7 @@ export async function signUp(req, res) {
       return res.status(409).json({ message: "Email is already registered" });
     }
 
+    await sendAccountLink({ ...user, passwordHash }, "verification");
     return sendSession(res, 201, "Account created successfully", user);
   } catch (error) {
     logger.error("Sign-up failed", { errorName: error.name });
@@ -93,7 +96,11 @@ export async function signIn(req, res) {
   try {
     const { email, password } = result.data;
     const [record] = await db
-      .select({ ...publicFields, passwordHash: users.passwordHash })
+      .select({
+        ...publicFields,
+        passwordHash: users.passwordHash,
+        sessionVersion: users.sessionVersion,
+      })
       .from(users)
       .where(eq(users.email, email))
       .limit(1);
@@ -109,7 +116,14 @@ export async function signIn(req, res) {
 
     const user = { ...record };
     delete user.passwordHash;
-    return sendSession(res, 200, "Signed in successfully", user);
+    delete user.sessionVersion;
+    return sendSession(
+      res,
+      200,
+      "Signed in successfully",
+      user,
+      record.sessionVersion,
+    );
   } catch (error) {
     logger.error("Sign-in failed", { errorName: error.name });
     return res.status(500).json(formatError(error));

@@ -15,13 +15,13 @@ if (!secret || Buffer.byteLength(secret) < 32) {
 const issuer = "acquisitions";
 const audience = "acquisitions-api";
 
-export function signToken(userId) {
+export function signToken(userId, sessionVersion = 0) {
   try {
     if (!Number.isSafeInteger(userId) || userId <= 0) {
       throw new TypeError("A positive integer user ID is required");
     }
 
-    return jwt.sign({}, secret, {
+    return jwt.sign({ sessionVersion }, secret, {
       algorithm: "HS256",
       subject: String(userId),
       issuer,

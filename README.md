@@ -1,6 +1,7 @@
 # Acquisitions
 
-Express API with account registration, sign-in, and sign-out.
+A customer and sales lead workspace with an Express API, NGN sales pipeline,
+and account management.
 
 ## User CRUD and administrator access
 
@@ -329,3 +330,152 @@ This pipeline publishes images; it does not deploy to a server or run production
 migrations. Server deployment automation requires the target host and access
 configuration. Keep production database credentials and admin signup keys on the
 deployment host, outside the image and repository.
+
+## Email verification and password reset
+
+Signups (including accounts created by admins) receive a verification email.
+User responses include `emailVerifiedAt`: `null` until the address is confirmed.
+Existing accounts and unverified users can still sign in; verification is recorded
+without introducing an access requirement for the existing CRUD routes.
+Changing an email address clears verification and sends a new verification link.
+
+| Method | Endpoint                               | JSON body                                                     |
+| ------ | -------------------------------------- | ------------------------------------------------------------- |
+| POST   | `/api/auth/request-email-verification` | `{"email":"you@example.com"}`                                 |
+| POST   | `/api/auth/verify-email`               | `{"token":"token-from-email"}`                                |
+| POST   | `/api/auth/forgot-password`            | `{"email":"you@example.com"}`                                 |
+| POST   | `/api/auth/reset-password`             | `{"token":"token-from-email","password":"your-new-password"}` |
+
+These endpoints do not require a bearer token. Email requests return the same
+202 message for unknown accounts, ineligible accounts, cooldowns, and delivery
+failures. Failures are logged without email contents or credentials. Delivery is
+synchronous; response times can vary with SMTP latency. Request another link if
+an email does not arrive after checking the application logs and mail provider.
+
+Verification links expire after 24 hours; password reset links after 30 minutes.
+Each is single-use, with only its SHA-256 hash stored in the database. Resending
+after the 60-second per-account cooldown replaces the previous link. The recovery
+endpoints also share an Arcjet limit of five requests per IP per ten minutes,
+using the existing Shield, bot protection, and error-decision behavior.
+
+Email links open built-in `/verify-email` and `/reset-password` pages. The action
+only happens after submitting the form, so a mail scanner opening a link does
+not consume it. Tokens travel in URL fragments and are sent to the API in POST
+bodies; access logs exclude query strings. In HTTPie, copy the value after
+`#token=` from the email link into the JSON `token` field.
+
+A successful reset clears the session cookie and invalidates previously issued
+bearer tokens for user management. Sign in again with the new password. Changing
+an email or password through user management invalidates outstanding reset links.
+
+### Development email inbox
+
+Apply the new migration, then rebuild the app with the new mail dependency:
+
+```bash
+npm run docker:dev:migrate
+npm run docker:dev
+```
+
+Docker development uses Mailpit at `http://localhost:8025`. It captures mail
+locally rather than delivering to real recipients. Sign up or request a reset,
+open the inbox, and follow the link. The app URL defaults to localhost with your
+configured `APP_PORT` (currently 3001 in your development environment).
+Set `APP_BASE_URL` in `.env.docker.dev` if you access the app through another origin.
+
+For host development, configure an SMTP server with `SMTP_HOST`, `SMTP_PORT`,
+`MAIL_FROM`, and `APP_BASE_URL` in `.env.local`. Docker's Mailpit SMTP port is
+internal to its network; only its inbox UI is published to localhost.
+
+### Production email delivery
+
+Configure these values in `.env.docker.prod` before rebuilding/recreating the app:
+
+```dotenv
+APP_BASE_URL=https://api.your-domain.com
+SMTP_HOST=smtp.your-provider.com
+SMTP_PORT=587
+SMTP_SECURE=false
+SMTP_USER=your-smtp-username
+SMTP_PASSWORD=your-smtp-password
+MAIL_FROM=Acquisitions <noreply@your-domain.com>
+```
+
+Use the sender address verified with your mail provider. Port 587 uses STARTTLS;
+for port 465 set `SMTP_SECURE=true`. TLS is required in production, and
+`APP_BASE_URL` must be an HTTPS origin without a path, query, or credentials.
+See [Nodemailer's SMTP configuration](https://nodemailer.com/smtp).
+
+Run `npm run docker:prod:migrate` against the intended production database before
+starting the new image. The migration adds nullable verification/recovery fields
+and a session version default of zero, preserving existing accounts. No live
+production migration is run by tests or GitHub Actions.
+
+## Vercel deployment
+
+The API is prepared for Vercel's native Express hosting, with Neon Cloud and SMTP.
+See [the deployment guide](docs/vercel-deployment.md) for project settings,
+production/preview environment variables, migrations, and first-deployment checks.
+Docker Compose remains the local development environment.
+
+## Customer and lead workspace
+
+Open `/` in your browser for the CRM frontend. Sign in with an existing account
+or create an account from the sign-in screen. The workspace includes an overview,
+customer and lead lists, search and filtering, create/edit/delete dialogs, and a
+six-stage sales pipeline. Lead stages can be changed from each pipeline card.
+Values are recorded and displayed in **NGN**; amounts must be non-negative and
+have at most two decimal places. No sample customers or leads are inserted into
+real databases.
+
+The frontend also supports profile updates, verification email requests, password
+reset requests, and admin role changes. Bearer tokens are kept in sessionStorage
+for the current tab and cleared on sign-out or session rejection. The API still
+supports HTTPie. Email confirmation and reset links use the existing action pages.
+
+### CRM API
+
+All routes below require `Authorization: Bearer <token>`:
+
+| Method               | Endpoint                 | Purpose                                                        |
+| -------------------- | ------------------------ | -------------------------------------------------------------- |
+| GET                  | `/api/crm/overview`      | Customer count, pipeline totals, recent leads, next follow-ups |
+| GET / POST           | `/api/crm/customers`     | List or create customers                                       |
+| GET / PATCH / DELETE | `/api/crm/customers/:id` | Read, update, or delete a customer                             |
+| GET / POST           | `/api/crm/leads`         | List or create leads                                           |
+| GET / PATCH / DELETE | `/api/crm/leads/:id`     | Read, update, or delete a lead                                 |
+
+Lists support `page`, `limit` (1–100), and `search`. Customers also accept `status`
+(`active`, `inactive`); leads accept `stage` (`new`, `contacted`, `qualified`,
+`proposal`, `won`, `lost`). Responses contain the resource array, total, page,
+limit, and hasMore. Individual create/read/update responses contain `record`.
+PATCH only changes supplied fields, and unexpected fields are rejected.
+
+Customer creation requires `name` and `email`; optional fields are `company`,
+`phone`, `status`, and `notes`. Lead creation requires `title`; optional fields
+are `contactName`, `email`, `company`, `source`, `value` (a JSON number in NGN),
+`stage`, `customerId`, `followUpDate` (`YYYY-MM-DD`), and `notes`.
+
+Records belong to their creator. Regular users can only manage their own records;
+admins can manage all team records. Ownership is server-assigned and cannot be
+changed through these endpoints. Linked customers must have the same owner as
+the lead. Deleting a customer preserves its leads and removes their customer link.
+Deleting a user preserves CRM records with no owner so administrators can still
+manage them. Password resets and role changes take effect on CRM access too.
+
+Follow-ups are dates on leads, shown in the overview; automatic reminder emails,
+activity history, lead conversion, and reassignment are not part of this version.
+The pipeline loads up to 100 cards per page, with a Load more control; its column
+counts describe loaded records. Overview totals cover all accessible records.
+
+Apply the CRM migration and rebuild local development:
+
+```bash
+npm run docker:dev:migrate
+npm run docker:dev
+```
+
+For Vercel, commit the `public/crm-assets` files and `src/public/crm.html` along
+with the APIs and migration. The existing configuration includes the HTML in the
+function bundle and serves assets from the public directory. Apply migrations
+to the production database before deploying the new code.

@@ -15,6 +15,20 @@
       "when": 1788993309686,
       "tag": "0001_zippy_barracuda",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1789040584719,
+      "tag": "0002_dapper_kronos",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1789063515541,
+      "tag": "0003_calm_luminals",
+      "breakpoints": true
     }
   ]
 }

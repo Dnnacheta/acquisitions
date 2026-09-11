@@ -36,3 +36,5 @@ logs/
 
 # Generated migration metadata
 drizzle/meta/
+
+.vercel/
